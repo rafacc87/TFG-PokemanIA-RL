@@ -56,9 +56,9 @@ class GameEmulator:
         self.pyboy.tick(press_step)
         self.pyboy.tick(1)
 
-        # Limpiar audio buffer si sonido está activo
-        if self.sound_active:
-            self.pyboy.get_audio_buffer().clear()
+        # Limpiar audio buffer
+        if not self.sound_active:
+            _ = self.pyboy.sound.raw_buffer
 
     def load_state(self, initial_state):
         with open(initial_state, "rb") as f:
