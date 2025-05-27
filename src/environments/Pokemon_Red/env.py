@@ -14,7 +14,7 @@ class PokemonRedEnv(Env):
         self.memory_reader = memory_reader
         self.vision_model = vision_model
         self.video_recorder = video_recorder
-        
+
 
         ##--------- Config -----------------
         self.print_rewards = config["print_rewards"]
@@ -51,7 +51,6 @@ class PokemonRedEnv(Env):
         #--------- Observation space config -----------------
         self.recent_actions = deque(maxlen=self.quantity_action_storage)
         self.action_space = spaces.Discrete(len(self.emulator.VALID_ACTIONS))
-
         self.output_shape_main = (72,80)
         self.observation_space = spaces.Dict(
             {
@@ -60,6 +59,7 @@ class PokemonRedEnv(Env):
                 "health": spaces.Box(low=0, high=1),
                 "badges": spaces.Discrete(8),
                 "events": spaces.MultiBinary(self.memory_reader.get_difference_between_events()),
+              "score": spaces.Box(0.0, np.inf, shape=(1,), dtype=np.float32),
                 "map": spaces.Box(low=0, high=255, shape=(self.coords_pad*4,self.coords_pad*4, 1), dtype=np.uint8),
                 "visit_map": spaces.Box(low=0.0, high=1.0, shape=(self.coords_pad*4, self.coords_pad*4, 1), dtype=np.float32),
                 "recent_actions": spaces.MultiDiscrete([len(self.emulator.VALID_ACTIONS)]*self.quantity_action_storage),
@@ -114,6 +114,8 @@ class PokemonRedEnv(Env):
         self.party_size = 0
         self.step_count = 0
         self.region_count_r = 0
+        self.menu_penalty = 0
+        self.battle = 0
         ##Vision
         self.base_event_flags = self.memory_reader.read_events_done()
 
@@ -129,7 +131,7 @@ class PokemonRedEnv(Env):
         self.total_reward = sum([val for _, val in self.progress_reward.items()])
         self.reset_count += 1
         return self._get_obs(), {}
-        
+
     def step(self, action):
         self.emulator.step(action)
         self.update_recent_actions(action)
@@ -137,6 +139,28 @@ class PokemonRedEnv(Env):
         self.update_explore_map()
         self.update_heal_reward()
         self.update_visit_map()
+
+        # Battle
+        if self.memory_reader.is_in_battle():
+            self.step_penalty += 0.001
+            # Options battle
+            if self.memory_reader.is_battle_fight():
+                self.battle += 0.05
+            elif self.memory_reader.is_battle_item():
+                self.battle += 0.01
+            elif self.memory_reader.is_battle_item():
+                self.battle += 0.01
+            elif self.memory_reader.is_battle_run():
+                self.battle -= 0.01
+        else:
+            if self.battle < 0:
+                self.battle += 0.001
+            self.step_penalty += 0.005
+        # Menu
+        if self.memory_reader.is_menu_open():
+            self.menu_penalty -= 0.01  # Penalización más alta por abrir menú
+        elif self.menu_penalty < 0:
+            self.menu_penalty += 0.005
 
         self.party_size = self.memory_reader.read_pokemon_in_party()
 
@@ -146,7 +170,15 @@ class PokemonRedEnv(Env):
         self.print_info()
 
         self.step_count += 1
-        info = {"episode": {"r": self.total_reward,  "l": self.step_count, "exploration_reward":self.reward_scale * (self.get_exploration_reward()) * 3}}
+        info = {
+            "episode": {
+                "r": self.total_reward,
+                "l": self.step_count,
+                "exploration_reward":
+                    self.reward_scale * (self.get_exploration_reward()) * 3,
+                "score": self.memory_reader.get_event_score()
+            }
+        }
         return obs, new_reward, False, step_limit_reached, info
 
     def _get_obs(self):
@@ -163,15 +195,16 @@ class PokemonRedEnv(Env):
             "health": np.array([self.read_hp_fraction()]),
             "badges": self.memory_reader.read_bagdes_in_possesion(),
             "events": np.array(self.memory_reader.read_event_bits(), dtype=np.int8),
+            'score': np.array([self.memory_reader.get_event_score()], dtype=np.float32),
             "map": self.get_explore_map()[:, :, None],
             "recent_actions": self.recent_actions,
             "remaining_ratio":  np.array([self.get_remaining_in_current_region()], dtype=np.float32),
             "coords": np.array([x,y,m], dtype=np.int32),
             "visit_map": self.get_visit_map_crop()[..., None],  # visitas normalizadas
         }
-        
+
         return observation
-    
+
     def check_if_done(self):
         return self.step_count >= self.max_steps - 1
 
@@ -182,14 +215,14 @@ class PokemonRedEnv(Env):
                 prog_string += f" {key}: {val:5.5f}"
             prog_string += f" sum: {self.total_reward:5.5f}"
             print(f"\r{prog_string}", end="", flush=True)
-    
+
     def update_recent_actions(self, action):
         self.recent_actions.appendleft(action)
-    
+
     def update_seen_coords(self):
         """
         Registra las coordenadas visitadas, contando las visitas y guardando el paso en que se visitaron.
-        
+
         Parámetros:
         - current_step: Número de paso actual en la simulación.
         """
@@ -205,19 +238,19 @@ class PokemonRedEnv(Env):
                 self.seen_coords[coord_string] = {'count': 1}
     
     def read_hp_fraction(self):
-        hp_sum =  self.memory_reader.get_sum_all_current_hp()
+        hp_sum = self.memory_reader.get_sum_all_current_hp()
         max_hp_sum = self.memory_reader.get_sum_all_max_hp()
 
         if max_hp_sum == 0:
             return hp_sum
-        
+
         return hp_sum / max_hp_sum
-    
+
     def get_agent_stats(self):
         x_pos, y_pos, map_n = self.memory_reader.get_game_coords()
         levels = self.memory_reader.get_all_player_pokemon_level()
         reg = self.get_current_region()
-        region_id   = reg["id"]   if reg else None
+        region_id = reg["id"] if reg else None
         region_name = reg["name"] if reg else "Unknown"
         region_reward = self.get_region_reward()
 
@@ -239,6 +272,7 @@ class PokemonRedEnv(Env):
                 "deaths": self.died_count,
                 "badge": self.memory_reader.read_bagdes_in_possesion(),
                 "event": self.progress_reward["event"],
+
                 "healr": self.total_healing_rew,
                 "step_penality": self.step_count*self.step_discount,
                 "action": self.recent_actions[0]
@@ -260,16 +294,29 @@ class PokemonRedEnv(Env):
 
         return new_step
     
+
+    # REWARD FUNCTIONS
     def calculate_reward(self):
+        # x, y, m = self.memory_reader.get_game_coords()
+        # gy, gx = local_to_global(x, y, m)
+        scale = self.reward_scale
+        m_score = self.memory_reader.get_event_score()
+        m_event = self.memory_reader.read_events_done()
+        m_badge = self.memory_reader.read_bagdes_in_possesion()
         return {
-            "event": self.reward_scale * self.memory_reader.read_events_done(),
-            "heal": self.reward_scale * self.total_healing_rew * 0.0001,
-            "dead": self.reward_scale * self.died_count / 5,
-            "badge": self.reward_scale * self.memory_reader.read_bagdes_in_possesion() * 10,
-            "explore": self.reward_scale * self.get_exploration_reward() * 2,
-            "region": self.reward_scale * self.get_region_reward()
+            "score": scale * m_score,
+            "event": scale * m_event * 0.5,
+            "badge": scale * m_badge * 2.0,
+            "♥": scale * self.total_healing_rew * 0.05,
+            "†": scale * self.died_count * 0.05,
+            "explore": scale * self.get_exploration_reward() * 0.5,
+            "region": scale * self.get_region_reward() * 0.2,
+            # "stuck": self.reward_scale * self.get_stuck_penalty(),
+            "step_penalty": scale * self.step_penalty * -0.1,
+            "≡": scale * self.menu_penalty * 0.2,
+            "‼": scale * self.battle * 0.2
         }
-    
+
     def update_heal_reward(self):
         cur_health = self.read_hp_fraction()
         # if health increased and party size did not change
