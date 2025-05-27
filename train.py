@@ -2,6 +2,7 @@
 from src.environments.Pokemon_Red.env import PokemonRedEnv
 from src.agents.ppo_agent import PPOAgent
 from src.utils.stream_agent_wrapper import StreamWrapper
+from src.utils.video_recorder import VideoRecorder
 
 from src.utils.callbacks.tensorboard_callback import TensorboardCallback
 from src.utils.callbacks.every_epoch_memory_cleaner import EveryEpochMemoryCleaner
@@ -36,7 +37,8 @@ from datetime import datetime
 import multiprocessing as mp
 
 
-def make_env(rank, config,  request_q, response_q, seed=0):
+def make_env(rank,session_path, config,  request_q, response_q, seed=0):
+
     """
     Utility function for multiprocessed env.
     :param env_id: (str) the environment ID
@@ -53,9 +55,13 @@ def make_env(rank, config,  request_q, response_q, seed=0):
         else:
             print(f"[ENV - {rank}] Usando modelo de visión propio")
             vision_model = STELLEInferencer()
-
+        video_recorder = None
+        if config.get("save_video",False):
+            save_path = os.path.join(session_path,"videos",f"env_{rank}")
+            os.makedirs(save_path, exist_ok=True)
+            video_recorder = VideoRecorder(save_path=save_path)
         env = StreamWrapper(
-            PokemonRedEnv(emulator,memory_reader, vision_model,config), 
+            PokemonRedEnv(emulator,memory_reader, vision_model,video_recorder,config), 
             stream_metadata = { # All of this is part is optional
                 "user": "Calafell", # choose your own username
                 "env_id": rank, # environment identifier
@@ -102,22 +108,6 @@ if __name__ == "__main__":
     server_enabled = config.get("server", False)
     use_wandb_logging = config.get("use_wandb", True)
 
-    # --------- Starting queues -----------------
-
-    if server_enabled:
-        manager = mp.Manager()
-        request_q = manager.Queue()
-        
-        response_queues = [manager.Queue() for _ in range(num_cpu)]
-        inference_proc = mp.Process(
-            target=inference_process,
-            args=(request_q,),
-        )
-        inference_proc.start()
-        env = SubprocVecEnv([make_env(i, config,  request_q, response_queues[i]) for i in range(num_cpu)])
-    else:
-        env = SubprocVecEnv([make_env(i, config,  None, None) for i in range(num_cpu)])
-
     
     # --------- Creating paths and directories -----------------
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -131,6 +121,22 @@ if __name__ == "__main__":
     os.makedirs(base_dir, exist_ok=True)
     os.makedirs(sess_path_logs, exist_ok=True)
     os.makedirs(agent_stats_dir, exist_ok=True)
+
+    # --------- Starting queues -----------------
+
+    if server_enabled:
+        manager = mp.Manager()
+        request_q = manager.Queue()
+        
+        response_queues = [manager.Queue() for _ in range(num_cpu)]
+        inference_proc = mp.Process(
+            target=inference_process,
+            args=(request_q,),
+        )
+        inference_proc.start()
+        env = SubprocVecEnv([make_env(i, base_dir, config,  request_q, response_queues[i]) for i in range(num_cpu)])
+    else:
+        env = SubprocVecEnv([make_env(i,base_dir,  config,  None, None) for i in range(num_cpu)])
 
     # --------- General training information -----------------
     metadata = {
@@ -152,7 +158,7 @@ if __name__ == "__main__":
         CheckpointCallback(save_freq=config.get("checkpoint_save_freq", 64),save_path=base_dir,name_prefix=sess_id), 
         TensorboardCallback(sess_path_logs,num_cpu), 
         EveryEpochMemoryCleaner(),
-        AgentStatsLoggerCallback(base_dir=agent_stats_dir,num_envs=num_cpu),
+        AgentStatsLoggerCallback(base_dir=agent_stats_dir,num_envs=num_cpu,save_every=config.get("save_stats_every",50)),
         RewardThresholdCallback(reward_threshold=config.get("reward_threshold",-100))
     ]
 
