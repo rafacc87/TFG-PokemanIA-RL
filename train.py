@@ -14,27 +14,27 @@ from emulators.pyboy.emulator import GameEmulator
 from emulators.pyboy.memory_reader import MemoryReader
 from models.segmentation.STELLE_Pokemon_Segmentation.inference.inferencer import STELLEInferencer
 
-#Queue imports
+# Queue imports
 from server.shared_inferencer import SharedInferencer
 from server.inference_server import inference_process
 
-
-#Stable baselines 3 imports
+# Stable baselines 3 imports
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList
 from stable_baselines3.common.utils import set_random_seed
 
-#Weight & Bias imports
+# Weight & Bias imports
 import wandb
 from wandb.integration.sb3 import WandbCallback
 
-#Others imports
+# Others imports
 import yaml
 import os
 import sys
 import json
 from datetime import datetime
 import multiprocessing as mp
+
 
 def make_env(rank, config,  request_q, response_q, seed=0):
     """
@@ -57,11 +57,11 @@ def make_env(rank, config,  request_q, response_q, seed=0):
         env = StreamWrapper(
             PokemonRedEnv(emulator,memory_reader, vision_model,config), 
             stream_metadata = { # All of this is part is optional
-                "user": "Ramien", # choose your own username
+                "user": "Calafell", # choose your own username
                 "env_id": rank, # environment identifier
-                "color": "#7A378B", # choose your color :)
+                "color": "#D06030", # choose your color :)
                 "extra": "STELLE", # any extra text you put here will be displayed,
-                "sprite_id": 22 ## Prueba
+                "sprite_id": 22 # Prueba
             }
         )
         env.reset(seed=(seed + rank))
@@ -77,21 +77,27 @@ if __name__ == "__main__":
     with open("config/config.yaml", "r") as file:
         config = yaml.safe_load(file)
 
-    
-    num_cpu = config.get("num_cpu", 1)
+    if config.get("save_video"):
+        num_cpu = 1
+    else:
+        num_cpu = config.get("num_cpu", 1)
 
-    checkpoint_from_yaml =config.get("load_checkpoint", "")
+    checkpoint_from_yaml = config.get("load_checkpoint", "")
     checkpoint_arg = sys.argv[1] if len(sys.argv) > 1 else None
 
     # Priorizar argumento si existe
     file_name = checkpoint_arg if checkpoint_arg else checkpoint_from_yaml
 
     ep_length = config.get("max_steps", 1000000) * num_cpu
-    train_steps_batch = config.get("train_steps_batch", ep_length // 1024) 
-    batch_size = config.get("batch_size", ep_length//256)
+    if num_cpu == 1:
+        batch_size = config.get("batch_size", ep_length//256)
+        train_steps_batch = config.get("train_steps_batch", batch_size)
+    else:
+        batch_size = config.get("batch_size", ep_length//256)
+        train_steps_batch = config.get("train_steps_batch", ep_length // 1024)
 
     iterations = config.get("iterations", 1)
-    progress_bar = config.get("progress_bar",False)
+    progress_bar = config.get("progress_bar", False)
 
     server_enabled = config.get("server", False)
     use_wandb_logging = config.get("use_wandb", True)

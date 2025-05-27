@@ -1,1 +1,6 @@
 wandb/
+game&results/
+
+last_checkpoint_path.txt
+emulators/pyboy/__pycache__/*.pyc
+src/utils/__pycache__/*.pyc
